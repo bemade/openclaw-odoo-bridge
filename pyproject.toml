@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openclaw-odoo-bridge"
+version = "0.1.0"
+description = "Sidecar bridge: Odoo mail notifications → OpenClaw bot gateway"
+readme = "README.md"
+license = "LGPL-3.0-only"
+requires-python = ">=3.11"
+authors = [
+    { name = "Marc Durepos", email = "marc@bemade.org" },
+]
+dependencies = [
+    "websockets>=13.0",
+    "aiohttp>=3.9",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "aioresponses>=0.7",
+]
+
+[project.scripts]
+openclaw-odoo-bridge = "openclaw_odoo_bridge.__main__:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
