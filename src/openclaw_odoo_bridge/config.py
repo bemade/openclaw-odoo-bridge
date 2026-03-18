@@ -16,6 +16,7 @@ class Config:
     openclaw_hooks_url: str
     openclaw_hooks_token: str
     reconnect_delay: float = 5.0
+    poll_interval: float = 15.0
     log_level: str = "INFO"
 
     @classmethod
@@ -36,6 +37,7 @@ class Config:
             openclaw_hooks_url=_require("OPENCLAW_HOOKS_URL"),
             openclaw_hooks_token=_require("OPENCLAW_HOOKS_TOKEN"),
             reconnect_delay=float(os.environ.get("RECONNECT_DELAY", "5")),
+            poll_interval=float(os.environ.get("POLL_INTERVAL", "15")),
             log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         )
 

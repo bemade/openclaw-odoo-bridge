@@ -14,7 +14,8 @@ from .config import Config
 
 _logger = logging.getLogger(__name__)
 
-HEARTBEAT_INTERVAL = 50  # seconds — Odoo times out idle connections at 60s
+PRESENCE_INTERVAL = 50  # seconds — Odoo marks offline after 65s without update
+CONNECTION_CHECK_INTERVAL = 60  # seconds — match Odoo JS client
 
 
 class _HTMLTextExtractor(HTMLParser):
@@ -117,19 +118,23 @@ class OdooClient:
         })
 
     async def get_unread_notifications(self) -> list[dict[str, Any]]:
-        """Fetch unread mail.notification records for the bot's partner."""
-        notif_ids = await self.call(
+        """Fetch unread mail.notification records for the bot's partner.
+
+        Returns (messages, notification_ids) so callers can mark them read.
+        """
+        notif_records = await self.call(
             "mail.notification",
             "search_read",
             [[
                 ("res_partner_id", "=", self.partner_id),
                 ("is_read", "=", False),
             ]],
-            {"fields": ["mail_message_id"], "limit": 100},
+            {"fields": ["id", "mail_message_id"], "limit": 100},
         )
-        if not notif_ids:
-            return []
-        message_ids = list({n["mail_message_id"][0] for n in notif_ids})
+        if not notif_records:
+            return [], []
+        notif_ids = [n["id"] for n in notif_records]
+        message_ids = list({n["mail_message_id"][0] for n in notif_records})
         messages = await self.call(
             "mail.message",
             "search_read",
@@ -145,7 +150,18 @@ class OdooClient:
                 ],
             },
         )
-        return messages
+        return messages, notif_ids
+
+    async def mark_notifications_read(self, notif_ids: list[int]) -> None:
+        """Mark mail.notification records as read."""
+        if not notif_ids:
+            return
+        await self.call(
+            "mail.notification",
+            "write",
+            [notif_ids, {"is_read": True}],
+        )
+        _logger.info("Marked %d notifications as read", len(notif_ids))
 
     async def listen_bus(self) -> AsyncIterator[list[dict[str, Any]]]:
         """Connect to Odoo WebSocket bus and yield notification batches."""
@@ -160,34 +176,46 @@ class OdooClient:
 
         async for ws in websockets.asyncio.client.connect(
             self._config.odoo_ws_url,
-            additional_headers={"Cookie": cookie_header},
+            additional_headers={
+                "Cookie": cookie_header,
+                "Origin": self._config.odoo_url,
+            },
         ):
             try:
                 # Subscribe — Odoo auto-adds the user's partner channel
-                subscribe_msg = json.dumps({
+                await ws.send(json.dumps({
                     "event_name": "subscribe",
                     "data": {
                         "channels": [],
                         "last": self._last_notif_id,
                     },
-                })
-                await ws.send(subscribe_msg)
+                }))
                 _logger.info(
                     "WebSocket connected, subscribed (last=%d)",
                     self._last_notif_id,
                 )
 
-                # Start heartbeat task
-                heartbeat_task = asyncio.create_task(
-                    self._heartbeat(ws)
+                # Send initial presence to mark bot as "Online"
+                await self._send_presence(ws)
+
+                # Start background tasks for presence + connection check
+                presence_task = asyncio.create_task(
+                    self._presence_loop(ws)
+                )
+                keepalive_task = asyncio.create_task(
+                    self._keepalive_loop(ws)
                 )
                 try:
                     async for raw in ws:
                         if isinstance(raw, bytes):
-                            # Pong or heartbeat response — ignore
+                            _logger.debug("WS binary frame: %r", raw[:50])
                             continue
+                        _logger.debug("WS text frame: %s", raw[:200])
                         notifications = json.loads(raw)
                         if not isinstance(notifications, list):
+                            _logger.debug(
+                                "WS non-list payload: %s", type(notifications)
+                            )
                             continue
                         if notifications:
                             self._last_notif_id = max(
@@ -195,22 +223,50 @@ class OdooClient:
                             )
                         yield notifications
                 finally:
-                    heartbeat_task.cancel()
-                    try:
-                        await heartbeat_task
-                    except asyncio.CancelledError:
-                        pass
-            except websockets.ConnectionClosed:
-                _logger.warning("WebSocket connection closed, will reconnect")
+                    presence_task.cancel()
+                    keepalive_task.cancel()
+                    for task in (presence_task, keepalive_task):
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+            except websockets.ConnectionClosed as e:
+                _logger.warning(
+                    "WebSocket closed (code=%s reason=%s), will reconnect",
+                    e.code, e.reason,
+                )
                 continue
 
     @staticmethod
-    async def _heartbeat(
+    async def _send_presence(
         ws: websockets.asyncio.client.ClientConnection,
     ) -> None:
-        """Send periodic heartbeat to prevent Odoo from closing the connection."""
+        """Send update_presence to mark the bot user as online."""
+        await ws.send(json.dumps({
+            "event_name": "update_presence",
+            "data": {"inactivity_period": 0},
+        }))
+        _logger.debug("Sent update_presence")
+
+    @classmethod
+    async def _presence_loop(
+        cls, ws: websockets.asyncio.client.ClientConnection,
+    ) -> None:
+        """Periodically update presence to stay online."""
         while True:
-            await asyncio.sleep(HEARTBEAT_INTERVAL)
+            await asyncio.sleep(PRESENCE_INTERVAL)
+            try:
+                await cls._send_presence(ws)
+            except websockets.ConnectionClosed:
+                return
+
+    @staticmethod
+    async def _keepalive_loop(
+        ws: websockets.asyncio.client.ClientConnection,
+    ) -> None:
+        """Send periodic connection-check pings (matches Odoo JS client)."""
+        while True:
+            await asyncio.sleep(CONNECTION_CHECK_INTERVAL)
             try:
                 await ws.send(b"\x00")
             except websockets.ConnectionClosed:

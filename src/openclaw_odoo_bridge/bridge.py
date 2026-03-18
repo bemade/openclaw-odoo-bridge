@@ -56,17 +56,55 @@ class Bridge:
     async def _catch_up(self) -> None:
         """Process any unread notifications from while we were disconnected."""
         _logger.info("Catching up on unread notifications...")
-        messages = await self._odoo.get_unread_notifications()
+        messages, notif_ids = await self._odoo.get_unread_notifications()
         for msg in messages:
             await self._forward_message(msg)
         if messages:
             _logger.info("Caught up on %d unread messages", len(messages))
+            await self._odoo.mark_notifications_read(notif_ids)
 
     async def _listen(self) -> None:
+        """Listen via WebSocket and poll concurrently."""
+        ws_task = asyncio.create_task(self._listen_ws())
+        poll_task = asyncio.create_task(self._poll_loop())
+        try:
+            # If either task fails, cancel the other
+            done, pending = await asyncio.wait(
+                [ws_task, poll_task],
+                return_when=asyncio.FIRST_EXCEPTION,
+            )
+            for task in pending:
+                task.cancel()
+            for task in done:
+                task.result()  # re-raise any exception
+        except asyncio.CancelledError:
+            ws_task.cancel()
+            poll_task.cancel()
+            raise
+
+    async def _listen_ws(self) -> None:
         """Listen to Odoo WebSocket bus and forward relevant notifications."""
         async for batch in self._odoo.listen_bus():
             for notif in batch:
                 await self._process_notification(notif)
+
+    async def _poll_loop(self) -> None:
+        """Periodically poll for unread notifications as a fallback."""
+        while True:
+            await asyncio.sleep(self._config.poll_interval)
+            try:
+                messages, notif_ids = (
+                    await self._odoo.get_unread_notifications()
+                )
+                for msg in messages:
+                    await self._forward_message(msg)
+                if messages:
+                    _logger.debug("Poll found %d new messages", len(messages))
+                    await self._odoo.mark_notifications_read(notif_ids)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _logger.warning("Poll error", exc_info=True)
 
     async def _process_notification(self, notif: dict[str, Any]) -> None:
         """Filter and forward a single bus notification."""

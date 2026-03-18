@@ -103,23 +103,28 @@ class TestProcessNotification:
 
 class TestCatchUp:
     async def test_catch_up_forwards_unread(self, bridge):
-        bridge._odoo.get_unread_notifications = AsyncMock(return_value=[
-            {
-                "id": 50,
-                "body": "<p>Missed message</p>",
-                "author_id": [3, "Bob"],
-                "model": "sale.order",
-                "res_id": 5,
-                "record_name": "SO005",
-            },
-        ])
+        bridge._odoo.get_unread_notifications = AsyncMock(return_value=(
+            [
+                {
+                    "id": 50,
+                    "body": "<p>Missed message</p>",
+                    "author_id": [3, "Bob"],
+                    "model": "sale.order",
+                    "res_id": 5,
+                    "record_name": "SO005",
+                },
+            ],
+            [101],
+        ))
+        bridge._odoo.mark_notifications_read = AsyncMock()
         bridge._openclaw.send = AsyncMock(return_value="run-2")
         await bridge._catch_up()
         bridge._openclaw.send.assert_called_once()
         assert "Missed message" in bridge._openclaw.send.call_args[1]["message"]
+        bridge._odoo.mark_notifications_read.assert_called_once_with([101])
 
     async def test_catch_up_empty(self, bridge):
-        bridge._odoo.get_unread_notifications = AsyncMock(return_value=[])
+        bridge._odoo.get_unread_notifications = AsyncMock(return_value=([], []))
         bridge._openclaw.send = AsyncMock()
         await bridge._catch_up()
         bridge._openclaw.send.assert_not_called()

@@ -36,6 +36,7 @@ All configuration is via environment variables (or `.env` file):
 | `OPENCLAW_HOOKS_URL` | Yes | OpenClaw hooks endpoint |
 | `OPENCLAW_HOOKS_TOKEN` | Yes | OpenClaw bearer token |
 | `RECONNECT_DELAY` | No | Seconds between reconnects (default: 5) |
+| `POLL_INTERVAL` | No | Seconds between notification polls (default: 15) |
 | `LOG_LEVEL` | No | Logging level (default: INFO) |
 
 ## Development

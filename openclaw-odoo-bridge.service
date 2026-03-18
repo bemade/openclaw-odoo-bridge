@@ -1,0 +1,17 @@
+[Unit]
+Description=OpenClaw Odoo Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=openclaw
+Group=openclaw
+WorkingDirectory=/opt/openclaw-odoo-bridge
+EnvironmentFile=/opt/openclaw-odoo-bridge/.env
+ExecStart=/opt/openclaw-odoo-bridge/.venv/bin/openclaw-odoo-bridge
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
